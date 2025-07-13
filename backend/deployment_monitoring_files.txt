@@ -1,0 +1,880 @@
+# =============================================================================
+# DOCKER FILES
+# =============================================================================
+
+# backend/Dockerfile
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apk add --no-cache \
+    python3 \
+    make \
+    g++ \
+    cairo-dev \
+    jpeg-dev \
+    pango-dev \
+    musl-dev \
+    giflib-dev \
+    pixman-dev \
+    pangomm-dev \
+    libjpeg-turbo-dev \
+    freetype-dev
+
+# Copy package files
+COPY package*.json ./
+RUN npm ci --only=production && npm cache clean --force
+
+# Copy source code
+COPY . .
+
+# Create uploads and logs directories
+RUN mkdir -p uploads logs && \
+    chown -R node:node /app
+
+# Switch to non-root user
+USER node
+
+# Expose port
+EXPOSE 3001
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD node healthcheck.js
+
+# Start the application
+CMD ["npm", "start"]
+
+---
+
+# frontend/Dockerfile
+FROM node:18-alpine as builder
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+RUN npm ci
+
+# Copy source and build
+COPY . .
+ARG REACT_APP_API_URL
+ARG REACT_APP_ADMIN_URL
+ENV REACT_APP_API_URL=$REACT_APP_API_URL
+ENV REACT_APP_ADMIN_URL=$REACT_APP_ADMIN_URL
+
+RUN npm run build
+
+# Production stage
+FROM nginx:alpine
+
+# Copy nginx configuration
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# Copy built application
+COPY --from=builder /app/build /usr/share/nginx/html
+
+# Add health check
+RUN apk add --no-cache curl
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:80 || exit 1
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]
+
+---
+
+# admin/Dockerfile
+FROM node:18-alpine as builder
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+ARG REACT_APP_API_URL
+ENV REACT_APP_API_URL=$REACT_APP_API_URL
+
+RUN npm run build
+
+FROM nginx:alpine
+
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=builder /app/build /usr/share/nginx/html
+
+RUN apk add --no-cache curl
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:80 || exit 1
+
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+
+---
+
+# =============================================================================
+# KUBERNETES DEPLOYMENT (Optional - for scaling)
+# =============================================================================
+
+# k8s/namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: yarn-management
+
+---
+
+# k8s/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: yarn-management-config
+  namespace: yarn-management
+data:
+  NODE_ENV: "production"
+  FRONTEND_URL: "https://yarn.yourdomain.com"
+  REACT_APP_API_URL: "https://yarn.yourdomain.com/api"
+
+---
+
+# k8s/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: yarn-management-secrets
+  namespace: yarn-management
+type: Opaque
+stringData:
+  DATABASE_URL: "postgresql://username:password@postgres:5432/yarn_management"
+  JWT_SECRET: "your-jwt-secret"
+  GOOGLE_CLIENT_ID: "your-google-client-id"
+  GOOGLE_CLIENT_SECRET: "your-google-client-secret"
+  RAVELRY_USERNAME: "your-ravelry-username"
+  RAVELRY_PASSWORD: "your-ravelry-password"
+
+---
+
+# k8s/postgres.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: yarn-management
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15
+        env:
+        - name: POSTGRES_DB
+          value: yarn_management
+        - name: POSTGRES_USER
+          value: yarn_user
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: yarn-management-secrets
+              key: DB_PASSWORD
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: postgres-pvc
+
+---
+
+# k8s/backend.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: yarn-management
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+      - name: backend
+        image: yarn-management/backend:latest
+        ports:
+        - containerPort: 3001
+        envFrom:
+        - configMapRef:
+            name: yarn-management-config
+        - secretRef:
+            name: yarn-management-secrets
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 3001
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 3001
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+
+# =============================================================================
+# MONITORING AND LOGGING
+# =============================================================================
+
+# monitoring/docker-compose.monitoring.yml
+version: '3.8'
+
+services:
+  # Prometheus for metrics
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: yarn_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - yarn_network
+
+  # Grafana for dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: yarn_grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+    networks:
+      - yarn_network
+
+  # Node Exporter for system metrics
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: yarn_node_exporter
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    networks:
+      - yarn_network
+
+  # Loki for log aggregation
+  loki:
+    image: grafana/loki:latest
+    container_name: yarn_loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./monitoring/loki-config.yml:/etc/loki/local-config.yaml
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - yarn_network
+
+  # Promtail for log collection
+  promtail:
+    image: grafana/promtail:latest
+    container_name: yarn_promtail
+    volumes:
+      - ./logs:/var/log/yarn-management
+      - ./monitoring/promtail-config.yml:/etc/promtail/config.yml
+    command: -config.file=/etc/promtail/config.yml
+    networks:
+      - yarn_network
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+
+networks:
+  yarn_network:
+    external: true
+
+---
+
+# monitoring/prometheus.yml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'yarn-management-backend'
+    static_configs:
+      - targets: ['backend:3001']
+    metrics_path: '/api/metrics'
+    scrape_interval: 30s
+
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres:5432']
+
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+
+---
+
+# monitoring/loki-config.yml
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+
+common:
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    instance_addr: 127.0.0.1
+    kvstore:
+      store: inmemory
+
+query_range:
+  results_cache:
+    cache:
+      embedded_cache:
+        enabled: true
+        max_size_mb: 100
+
+schema_config:
+  configs:
+    - from: 2020-10-24
+      store: boltdb-shipper
+      object_store: filesystem
+      schema: v11
+      index:
+        prefix: index_
+        period: 24h
+
+ruler:
+  alertmanager_url: http://localhost:9093
+
+---
+
+# monitoring/promtail-config.yml
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: yarn-management-logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: yarn-management
+          __path__: /var/log/yarn-management/*.log
+
+---
+
+# =============================================================================
+# CI/CD PIPELINE
+# =============================================================================
+
+# .github/workflows/ci-cd.yml
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: yarn_management_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: '**/package-lock.json'
+
+    - name: Install backend dependencies
+      run: |
+        cd backend
+        npm ci
+
+    - name: Run backend tests
+      run: |
+        cd backend
+        npm test
+      env:
+        DATABASE_URL: postgresql://postgres:test_password@localhost:5432/yarn_management_test
+        JWT_SECRET: test_secret
+
+    - name: Install frontend dependencies
+      run: |
+        cd frontend
+        npm ci
+
+    - name: Run frontend tests
+      run: |
+        cd frontend
+        npm test -- --coverage --watchAll=false
+
+    - name: Install admin dependencies
+      run: |
+        cd admin
+        npm ci
+
+    - name: Run admin tests
+      run: |
+        cd admin
+        npm test -- --coverage --watchAll=false
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    strategy:
+      matrix:
+        service: [backend, frontend, admin]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.service }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./${{ matrix.service }}
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Deploy to production
+      run: |
+        echo "Deploying to production server..."
+        # Add your deployment script here
+
+---
+
+# =============================================================================
+# SECURITY FILES
+# =============================================================================
+
+# .dockerignore
+node_modules
+npm-debug.log
+.git
+.gitignore
+README.md
+.env
+.nyc_output
+coverage
+.nyc_output
+.coverage
+.vscode
+.idea
+*.swp
+*.swo
+logs
+*.log
+
+---
+
+# security/fail2ban-yarn.conf
+# Fail2ban configuration for yarn management system
+[yarn-management]
+enabled = true
+port = 80,443,3001
+filter = yarn-management
+logpath = /var/log/nginx/access.log
+maxretry = 5
+bantime = 3600
+findtime = 600
+action = iptables-multiport[name=yarn-management, port="80,443,3001", protocol=tcp]
+
+---
+
+# security/nginx-security.conf
+# Security headers for Nginx
+add_header X-Frame-Options "SAMEORIGIN" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header X-XSS-Protection "1; mode=block" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' https:; connect-src 'self' https:;" always;
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+# Hide Nginx version
+server_tokens off;
+
+# Rate limiting
+limit_req_zone $binary_remote_addr zone=login:10m rate=1r/s;
+limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+limit_req_zone $binary_remote_addr zone=uploads:10m rate=1r/m;
+
+---
+
+# =============================================================================
+# BACKUP AND MAINTENANCE SCRIPTS
+# =============================================================================
+
+# scripts/backup-database.sh
+#!/bin/bash
+
+# Database backup script
+set -e
+
+BACKUP_DIR="/var/backups/yarn-management"
+DATE=$(date +%Y%m%d_%H%M%S)
+BACKUP_FILE="yarn_management_$DATE.sql"
+
+# Create backup directory
+mkdir -p $BACKUP_DIR
+
+# Create database backup
+echo "Creating database backup..."
+pg_dump $DATABASE_URL > "$BACKUP_DIR/$BACKUP_FILE"
+
+# Compress backup
+gzip "$BACKUP_DIR/$BACKUP_FILE"
+
+# Upload to cloud storage (if configured)
+if [ ! -z "$AWS_S3_BUCKET" ]; then
+    aws s3 cp "$BACKUP_DIR/$BACKUP_FILE.gz" "s3://$AWS_S3_BUCKET/backups/"
+fi
+
+# Clean up old backups (keep 7 days)
+find $BACKUP_DIR -name "*.gz" -mtime +7 -delete
+
+echo "Backup completed: $BACKUP_FILE.gz"
+
+---
+
+# scripts/restore-database.sh
+#!/bin/bash
+
+# Database restore script
+set -e
+
+if [ -z "$1" ]; then
+    echo "Usage: $0 <backup_file>"
+    exit 1
+fi
+
+BACKUP_FILE="$1"
+
+if [ ! -f "$BACKUP_FILE" ]; then
+    echo "Backup file not found: $BACKUP_FILE"
+    exit 1
+fi
+
+echo "WARNING: This will overwrite the current database!"
+read -p "Are you sure? (y/N): " -n 1 -r
+echo
+
+if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    echo "Restore cancelled."
+    exit 1
+fi
+
+# Stop the application
+docker-compose stop backend
+
+# Restore database
+if [[ $BACKUP_FILE == *.gz ]]; then
+    gunzip -c "$BACKUP_FILE" | psql $DATABASE_URL
+else
+    psql $DATABASE_URL < "$BACKUP_FILE"
+fi
+
+# Start the application
+docker-compose start backend
+
+echo "Database restored successfully!"
+
+---
+
+# scripts/update-system.sh
+#!/bin/bash
+
+# System update script
+set -e
+
+echo "🔄 Updating Yarn Management System..."
+
+# Pull latest changes
+git pull origin main
+
+# Update Docker images
+docker-compose pull
+
+# Rebuild and restart services
+docker-compose down
+docker-compose up -d --build
+
+# Run database migrations
+docker-compose exec backend npm run migrate
+
+# Clean up old Docker images
+docker image prune -f
+
+echo "✅ System updated successfully!"
+
+---
+
+# scripts/logs.sh
+#!/bin/bash
+
+# Log viewing script
+SERVICE=${1:-all}
+
+case $SERVICE in
+    "backend")
+        docker-compose logs -f backend
+        ;;
+    "frontend")
+        docker-compose logs -f frontend
+        ;;
+    "admin")
+        docker-compose logs -f admin
+        ;;
+    "nginx")
+        docker-compose logs -f nginx
+        ;;
+    "db")
+        docker-compose logs -f postgres
+        ;;
+    "all")
+        docker-compose logs -f
+        ;;
+    *)
+        echo "Usage: $0 [backend|frontend|admin|nginx|db|all]"
+        exit 1
+        ;;
+esac
+
+---
+
+# =============================================================================
+# DEVELOPMENT FILES
+# =============================================================================
+
+# .vscode/settings.json
+{
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": true
+  },
+  "eslint.workingDirectories": [
+    "backend",
+    "frontend", 
+    "admin"
+  ],
+  "files.exclude": {
+    "**/node_modules": true,
+    "**/build": true,
+    "**/dist": true,
+    "**/.env": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/build": true,
+    "**/dist": true,
+    "**/logs": true
+  }
+}
+
+---
+
+# .vscode/launch.json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Backend",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/backend/server.js",
+      "cwd": "${workspaceFolder}/backend",
+      "env": {
+        "NODE_ENV": "development"
+      },
+      "envFile": "${workspaceFolder}/backend/.env",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Debug Tests",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/backend/node_modules/.bin/jest",
+      "args": ["--runInBand"],
+      "cwd": "${workspaceFolder}/backend",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    }
+  ]
+}
+
+---
+
+# Makefile
+# Makefile for Yarn Management System
+
+.PHONY: help install dev build start stop clean test logs backup
+
+help: ## Show this help message
+	@echo 'Usage: make [target]'
+	@echo ''
+	@echo 'Targets:'
+	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+install: ## Install all dependencies
+	@echo "📦 Installing dependencies..."
+	cd backend && npm install
+	cd frontend && npm install  
+	cd admin && npm install
+
+dev: ## Start development environment
+	@echo "🚀 Starting development environment..."
+	docker-compose -f docker-compose.yml -f docker-compose.override.yml up -d
+	
+build: ## Build all services
+	@echo "🏗️ Building all services..."
+	docker-compose build
+
+start: ## Start production environment
+	@echo "🚀 Starting production environment..."
+	docker-compose up -d
+
+stop: ## Stop all services
+	@echo "🛑 Stopping all services..."
+	docker-compose down
+
+clean: ## Clean up containers and volumes
+	@echo "🧹 Cleaning up..."
+	docker-compose down -v
+	docker system prune -f
+
+test: ## Run all tests
+	@echo "🧪 Running tests..."
+	cd backend && npm test
+	cd frontend && npm test -- --watchAll=false
+	cd admin && npm test -- --watchAll=false
+
+logs: ## View logs
+	@echo "📋 Viewing logs..."
+	docker-compose logs -f
+
+backup: ## Create database backup
+	@echo "💾 Creating backup..."
+	./scripts/backup-database.sh
+
+restore: ## Restore database from backup
+	@echo "📥 Restoring database..."
+	@read -p "Enter backup file path: " backup_file; \
+	./scripts/restore-database.sh $$backup_file
+
+update: ## Update system
+	@echo "🔄 Updating system..."
+	./scripts/update-system.sh
+
+monitor: ## Start monitoring stack
+	@echo "📊 Starting monitoring..."
+	docker-compose -f monitoring/docker-compose.monitoring.yml up -d
+
+health: ## Check system health
+	@echo "🏥 Checking system health..."
+	./scripts/health-check.sh

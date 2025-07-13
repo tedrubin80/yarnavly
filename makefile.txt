@@ -1,0 +1,67 @@
+# Makefile for Yarn Management System
+
+.PHONY: help install dev build start stop clean test logs backup
+
+help: ## Show this help message
+	@echo 'Usage: make [target]'
+	@echo ''
+	@echo 'Targets:'
+	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+install: ## Install all dependencies
+	@echo "📦 Installing dependencies..."
+	cd backend && npm install
+	cd frontend && npm install  
+	cd admin && npm install
+
+dev: ## Start development environment
+	@echo "🚀 Starting development environment..."
+	docker-compose -f docker-compose.yml -f docker-compose.override.yml up -d
+	
+build: ## Build all services
+	@echo "🏗️ Building all services..."
+	docker-compose build
+
+start: ## Start production environment
+	@echo "🚀 Starting production environment..."
+	docker-compose up -d
+
+stop: ## Stop all services
+	@echo "🛑 Stopping all services..."
+	docker-compose down
+
+clean: ## Clean up containers and volumes
+	@echo "🧹 Cleaning up..."
+	docker-compose down -v
+	docker system prune -f
+
+test: ## Run all tests
+	@echo "🧪 Running tests..."
+	cd backend && npm test
+	cd frontend && npm test -- --watchAll=false
+	cd admin && npm test -- --watchAll=false
+
+logs: ## View logs
+	@echo "📋 Viewing logs..."
+	docker-compose logs -f
+
+backup: ## Create database backup
+	@echo "💾 Creating backup..."
+	./scripts/backup-database.sh
+
+restore: ## Restore database from backup
+	@echo "📥 Restoring database..."
+	@read -p "Enter backup file path: " backup_file; \
+	./scripts/restore-database.sh $$backup_file
+
+update: ## Update system
+	@echo "🔄 Updating system..."
+	./scripts/update-system.sh
+
+monitor: ## Start monitoring stack
+	@echo "📊 Starting monitoring..."
+	docker-compose -f monitoring/docker-compose.monitoring.yml up -d
+
+health: ## Check system health
+	@echo "🏥 Checking system health..."
+	./scripts/health-check.sh
