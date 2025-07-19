@@ -42,6 +42,16 @@ app.get('/api/health', (req, res) => {
 // API routes
 app.use('/api/auth', authRoutes);
 
+// backend/server.js - Add these lines after existing route imports
+const dashboardRoutes = require('./routes/dashboard');
+const activityRoutes = require('./routes/activity');
+const shoppingListRoutes = require('./routes/shoppingList');
+
+// Add these lines after existing route definitions
+app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/activity', activityRoutes);
+app.use('/api/shopping-list', shoppingListRoutes);
+
 // Basic API info
 app.get('/api', (req, res) => {
   res.json({ 
