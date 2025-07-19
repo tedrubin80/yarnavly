@@ -1,7 +1,7 @@
 {
-  "name": "yarn-management-frontend",
+  "name": "yarn-management-admin",
   "version": "1.0.0",
-  "description": "Frontend for Yarn Management System",
+  "description": "Admin panel for Yarn Management System",
   "private": true,
   "homepage": ".",
   "dependencies": {
@@ -17,31 +17,29 @@
     "react-scripts": "5.0.1",
     "typescript": "^4.9.5",
     "web-vitals": "^2.1.4",
+    "react-admin": "^4.13.0",
+    "ra-data-simple-rest": "^4.13.0",
+    "ra-data-json-server": "^4.13.0",
     "@mui/material": "^5.14.5",
     "@emotion/react": "^11.11.1",
     "@emotion/styled": "^11.11.0",
     "@mui/icons-material": "^5.14.3",
     "@mui/x-date-pickers": "^6.10.2",
-    "@tanstack/react-query": "^4.32.6",
+    "@mui/x-data-grid": "^6.10.2",
+    "recharts": "^2.8.0",
+    "date-fns": "^2.30.0",
+    "axios": "^1.5.0",
+    "lodash": "^4.17.21",
     "react-router-dom": "^6.15.0",
     "react-hook-form": "^7.45.4",
     "react-dropzone": "^14.2.3",
-    "react-beautiful-dnd": "^13.1.1",
-    "axios": "^1.5.0",
-    "date-fns": "^2.30.0",
-    "recharts": "^2.8.0",
-    "react-image-gallery": "^1.3.0",
-    "react-virtualized": "^9.22.5",
-    "lodash": "^4.17.21",
+    "ra-input-rich-text": "^4.13.0",
+    "ra-language-english": "^4.13.0",
+    "ra-language-french": "^4.13.0",
+    "polyglot": "^2.4.1",
     "react-helmet-async": "^1.3.0",
     "react-error-boundary": "^4.0.11",
-    "react-hot-toast": "^2.4.1",
-    "framer-motion": "^10.16.1",
-    "use-debounce": "^9.0.4",
-    "react-intersection-observer": "^9.5.2",
-    "react-window": "^1.8.8",
-    "react-infinite-scroll-component": "^6.1.0",
-    "react-select": "^5.7.4"
+    "react-hot-toast": "^2.4.1"
   },
   "scripts": {
     "start": "react-scripts start",
@@ -51,8 +49,7 @@
     "lint": "eslint src --ext .ts,.tsx,.js,.jsx",
     "lint:fix": "eslint src --ext .ts,.tsx,.js,.jsx --fix",
     "format": "prettier --write src/**/*.{ts,tsx,js,jsx,css,md}",
-    "type-check": "tsc --noEmit",
-    "analyze": "npm run build && npx bundle-analyzer build/static/js/*.js"
+    "type-check": "tsc --noEmit"
   },
   "eslintConfig": {
     "extends": [
@@ -78,16 +75,11 @@
     ]
   },
   "devDependencies": {
-    "@types/react-beautiful-dnd": "^13.1.4",
     "@types/lodash": "^4.14.196",
-    "@types/react-image-gallery": "^1.2.1",
-    "@types/react-virtualized": "^9.21.21",
-    "@types/react-window": "^1.8.5",
     "@typescript-eslint/eslint-plugin": "^6.5.0",
     "@typescript-eslint/parser": "^6.5.0",
     "eslint-plugin-react-hooks": "^4.6.0",
-    "prettier": "^3.0.2",
-    "bundle-analyzer": "^4.0.1"
+    "prettier": "^3.0.2"
   },
   "proxy": "http://localhost:3001",
   "engines": {
