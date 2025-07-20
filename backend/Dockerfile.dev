@@ -1,0 +1,29 @@
+# backend/Dockerfile.dev
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apk add --no-cache \
+    python3 \
+    make \
+    g++ \
+    cairo-dev \
+    jpeg-dev \
+    pango-dev \
+    giflib-dev
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm install
+
+# Create directories
+RUN mkdir -p uploads logs
+
+# Expose port
+EXPOSE 3001
+
+# Development command with hot reload
+CMD ["npm", "run", "dev"]
